@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SIMD Example</title>
+  <script type="text/javascript" src="jquery-2.2.1.min.js"></script>
+</head>
+
+<body>
+  <ol>
+    <li>Convert RGBA to YUV. Performance measurement here (to console).</li>
+    <li>Apply gamma correction (No SIMD).</li>
+    <li>Convert YUV to RGBA (No SIMD).</li>
+  </ol>
+
+  <div>
+    <label for="gamma">Gamma</label>
+    <input id="gamma" type="text" placeholder="Gamma" value="1.4" size="4" />
+
+    <label for="loopCount">Loop</label>
+    <input id="loopCount" type="text" placeholder="Loop" value="10" size="4" />
+
+    <button id="testNoSimd">No SIMD</button>
+    <button id="testSimd">SIMD</button>
+  </div>
+  <div>
+    <canvas id="canvas" width="1440" height="810"></canvas>
+  </div>
+
+  <script type="text/javascript">
+    var image = new Image();
+    image.src = "pudding.jpg";
+
+    var width = 1440;
+    var height = 810;
+
+    $("#testNoSimd").click(function() {
+      var context = getContext();
+      initialize(context);
+
+      var inputImageData = context.getImageData(0, 0, width, height);
+      var outputImageData = context.createImageData(inputImageData);
+
+      var yuv = new Uint8Array(width * height * 3);
+      var newYuv = new Uint8Array(width * height * 3);
+
+      console.time("Convert RGBA to YUV");
+      for (var i = 0; i <= $("#loopCount").val(); i++) {
+        convertRgbaToYuv(inputImageData.data, width, height, yuv);
+      }
+      console.timeEnd("Convert RGBA to YUV");
+
+      applyGamma(yuv, width, height, $("#gamma").val(), newYuv);
+      convertYuvToRgba(newYuv, width, height, outputImageData.data);
+      context.putImageData(outputImageData, 0, 0);
+    });
+
+    $("#testSimd").click(function() {
+      var context = getContext();
+      initialize(context);
+
+      var inputImageData = context.getImageData(0, 0, width, height);
+      var outputImageData = context.createImageData(inputImageData);
+
+      var yuv = new Uint8Array(width * height * 3);
+      var newYuv = new Uint8Array(width * height * 3);
+
+      console.time("Convert RGBA to YUV by SIMD");
+      for (var i = 0; i <= $("#loopCount").val(); i++) {
+        convertRgbaToYuvSimd(inputImageData.data, width, height, yuv);
+      }
+      console.timeEnd("Convert RGBA to YUV by SIMD");
+
+      applyGamma(yuv, width, height, $("#gamma").val(), newYuv);
+      convertYuvToRgba(newYuv, width, height, outputImageData.data);
+      context.putImageData(outputImageData, 0, 0);
+    });
+
+    function getContext() {
+      return $("#canvas")[0].getContext("2d");
+    }
+
+    function initialize(context) {
+      context.drawImage(image, 0, 0);
+    }
+
+    function convertRgbaToYuv(rgba, width, height, output) {
+      var imageSize = width * height;
+
+      for (var y = 0; y < height; y++) {
+        var rgbaOffsetY = y * width * 4;
+        var yuvOffsetBaseY = y * width;
+
+        for (var x = 0; x < width; x++) {
+          var rgbaOffset = rgbaOffsetY + x * 4;
+          var yuvOffsetBase = yuvOffsetBaseY + x;
+
+          var r = rgba[rgbaOffset + 0];
+          var g = rgba[rgbaOffset + 1];
+          var b = rgba[rgbaOffset + 2];
+          output[yuvOffsetBase + imageSize * 0] = (306 * r + 601 * g + 117 * b) >> 10;
+          output[yuvOffsetBase + imageSize * 1] = (-173 * r - 339 * g + 512 * b + 131072) >> 10;
+          output[yuvOffsetBase + imageSize * 2] = (512 * r - 429 * g - 83 * b + 131072) >> 10;
+        }
+      }
+    }
+
+    function convertRgbaToYuvSimd(rgba, width, height, output) {
+      var imageSize = width * height;
+      var arrayYUV = new Int32Array(4);
+
+      var vR0 = SIMD.Int32x4(306, -173, 512, 0);
+      var vG0 = SIMD.Int32x4(601, -339, -429, 0);
+      var vB0 = SIMD.Int32x4(117, 512, -83, 0);
+      var vUVOffset = SIMD.Int32x4(0, 131072, 131072, 0);
+
+      for (var y = 0; y < height; y++) {
+        var rgbaOffsetY = y * width * 4;
+        var yuvOffsetBaseY = y * width;
+
+        for (var x = 0; x < width; x++) {
+          var rgbaOffset = rgbaOffsetY + x * 4;
+          var yuvOffsetBase = yuvOffsetBaseY + x;
+
+          var r = rgba[rgbaOffset + 0];
+          var g = rgba[rgbaOffset + 1];
+          var b = rgba[rgbaOffset + 2];
+
+          var vR1 = SIMD.Int32x4.mul(SIMD.Int32x4.splat(r), vR0);
+          var vG1 = SIMD.Int32x4.mul(SIMD.Int32x4.splat(g), vG0);
+          var vB1 = SIMD.Int32x4.mul(SIMD.Int32x4.splat(b), vB0);
+
+          var vRGB1 = SIMD.Int32x4.add(vR1, vG1);
+          var vRGB2 = SIMD.Int32x4.add(vRGB1, vB1);
+          var vRGB3 = SIMD.Int32x4.add(vRGB2, vUVOffset);
+          var vRGB4 = SIMD.Int32x4.shiftRightByScalar(vRGB3, 10);
+
+          SIMD.Int32x4.store(arrayYUV, 0, vRGB4);
+          output[yuvOffsetBase + imageSize * 0] = arrayYUV[0];
+          output[yuvOffsetBase + imageSize * 1] = arrayYUV[1];
+          output[yuvOffsetBase + imageSize * 2] = arrayYUV[2];
+        }
+      }
+    }
+
+    function convertYuvToRgba(yuv, width, height, output) {
+      var imageSize = width * height;
+
+      for (var y = 0; y < height; y++) {
+        var rgbaOffsetY = y * width * 4;
+        var yuvOffsetBaseY = y * width;
+
+        for (var x = 0; x < width; x++) {
+          var rgbaOffset = rgbaOffsetY + x * 4;
+          var yuvOffsetBase = yuvOffsetBaseY + x;
+
+          var l = yuv[yuvOffsetBase + imageSize * 0];
+          var u = yuv[yuvOffsetBase + imageSize * 1] - 128;
+          var v = yuv[yuvOffsetBase + imageSize * 2] - 128;
+          output[rgbaOffset + 0] = (1024 * l + 1436 * v) >> 10;
+          output[rgbaOffset + 1] = (1024 * l - 352 * u - 731 * v) >> 10;
+          output[rgbaOffset + 2] = (1024 * l + 1815 * u) >> 10;
+          output[rgbaOffset + 3] = 255;
+        }
+      }
+    }
+
+    function applyGamma(yuv, width, height, gamma, output) {
+      var lut = new Array(255);
+      for (var i = 0; i <= 255; i++) {
+        var newValue = Math.round(Math.pow((i / 255.0), (1.0 / gamma)) * 255);
+        if (newValue < 0) {
+          newValue = 0;
+        } else if (newValue > 255) {
+          newValue = 255;
+        }
+        lut[i] = newValue;
+      }
+
+      for (var y = 0; y < height; y++) {
+        var yuvOffsetY = y * width;
+        for (var x = 0; x < width; x++) {
+          output[yuvOffsetY + x] = lut[yuv[yuvOffsetY + x]];
+        }
+      }
+
+      var offsetUv = width * height;
+      for (var i = 0; i < width * height * 2; i++) {
+        output[offsetUv + i] = yuv[offsetUv + i];
+      }
+    }
+
+    $(window).load(function() {
+      var context = getContext();
+      initialize(context);
+    });
+  </script>
+</body>
+</html>
